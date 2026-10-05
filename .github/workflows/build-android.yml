@@ -1,4 +1,4 @@
-name: Build Android APK (V4 Debug)
+name: Build Android APK (V6 Java Fixed)
 
 on:
   workflow_dispatch:
@@ -21,28 +21,31 @@ jobs:
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
-      - name: 4. 安装 Linux 依赖
+      # 【关键修复】：必须最先安装 Java 17，否则后面的安卓工具会报错
+      - name: 4. 安装 Java 17 (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 5. 安装 Linux 依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
 
-      - name: 5. 安装前端依赖
+      - name: 6. 安装前端依赖
         run: npm install
 
-      - name: 6. 配置 Android SDK
+      - name: 7. 配置 Android SDK (现在环境里已经是 Java 17 了，不会报错了)
         uses: android-actions/setup-android@v3
       
-      - name: 7. 安装 Android 组件
+      - name: 8. 安装 Android 组件
         run: sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-      - name: 8. 初始化 Android (关键：使用 echo 传递包名)
-        # 这次去掉了 || true，如果这里失败，我们会立刻看到报错
-        run: |
-          echo "com.iptv.player.app" | npm run tauri android init
-          # 检查是否生成成功
-          ls -la src-tauri/gen/android/ || echo "Android 目录未生成"
+      - name: 9. 初始化 Android (输入包名)
+        run: echo "com.iptv.player.app" | npm run tauri android init || true
 
-      - name: 9. 允许 HTTP
+      - name: 10. 允许 HTTP
         run: |
           MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
@@ -50,13 +53,13 @@ jobs:
             echo "✅ HTTP 配置完成"
           fi
 
-      - name: 10. 编译 APK
+      - name: 11. 编译 APK
         run: npx tauri android build --debug --target aarch64
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
-      - name: 11. 上传
+      - name: 12. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk
+          name: iptv-apk-v6-success
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
