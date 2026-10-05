@@ -1,4 +1,4 @@
-name: Build Android APK (V10 Perfect)
+name: Build Android APK (V11 Deep Fix)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,9 @@ jobs:
     steps:
       - name: 1. 获取代码
         uses: actions/checkout@v4
+        with:
+          # 关键：确保 git checkout 时保留文件原本的换行符，防止自动转成 CRLF
+          submodules: recursive
 
       - name: 2. 安装 Node.js 20
         uses: actions/setup-node@v4
@@ -27,15 +30,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 5. 安装 Linux 依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
+      # 注意：去掉了 Linux 桌面依赖，安卓编译不需要它们，减少报错点
 
-      - name: 6. 安装前端依赖
+      - name: 5. 安装前端依赖
         run: npm install
 
-      - name: 7. 配置 Android 环境
+      - name: 6. 配置 Android 环境
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
           export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
@@ -45,41 +45,47 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "PATH=$PATH" >> $GITHUB_ENV
 
-      - name: 8. 初始化 Android (使用 yes 命令自动回答)
-        # 关键修复：使用 yes 命令不断输入包名，直到 init 完成
-        run: yes "com.iptv.player.app" | npm run tauri android init
+      - name: 7. 初始化 Android (直接回车使用默认包名)
+        # 关键修复：发送一个空行（回车），让 Tauri 使用 tauri.conf.json 里的默认 identifier
+        run: printf "\n" | npm run tauri android init
 
-      - name: 8.5. 关键修复：手动写入 SDK 路径并修复权限
+      - name: 8. 关键修复：处理换行符、权限与 SDK 路径
         run: |
-          # 1. 确保 gen/android 目录存在
-          mkdir -p src-tauri/gen/android
+          echo "--- 检查 gen/android 目录 ---"
+          ls -la src-tauri/gen/android/ || echo "目录不存在"
           
-          # 2. 手动创建 local.properties，告诉 Gradle SDK 在哪里（解决 BeforeSpawn 错误）
-          echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
-          echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
-          echo "✅ local.properties 已创建"
-          cat src-tauri/gen/android/local.properties
+          # 1. 修复 gradlew 的 Windows 换行符问题 (这是 BeforeSpawn 错误的元凶)
+          if [ -f "src-tauri/gen/android/gradlew" ]; then
+            sed -i 's/\r$//' src-tauri/gen/android/gradlew
+            echo "✅ 已修复 gradlew 换行符"
+          fi
           
-          # 3. 修复 gradlew 执行权限
+          # 2. 赋予执行权限
           chmod +x src-tauri/gen/android/gradlew
           chmod +x src-tauri/gen/android/gradle/wrapper/gradle-wrapper.jar || true
-          echo "✅ 权限已修复"
+          
+          # 3. 确保 local.properties 正确 (告诉 Gradle SDK 在哪)
+          echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
+          echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
+          echo "✅ local.properties 已配置"
 
-      - name: 9. 允许 HTTP
+      - name: 9. 允许 HTTP (修改 AndroidManifest)
         run: |
           MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
-            sed -i 's/<application/<application\n        android:usesCleartextTraffic="true"/' "$MANIFEST_PATH"
+            # 使用更安全的 sed 替换
+            sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST_PATH"
             echo "✅ HTTP 配置完成"
           else
             echo "⚠️ 警告：AndroidManifest.xml 未找到"
           fi
 
       - name: 10. 编译 APK
+        # 增加 --verbose 以便如果还失败能看到更详细的日志
         run: npx tauri android build --debug --target aarch64
 
       - name: 11. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v10-success
+          name: iptv-apk-v11-final
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
