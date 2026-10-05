@@ -1,4 +1,4 @@
-name: Build Android APK (V9 Final Fix)
+name: Build Android APK (V10 Perfect)
 
 on:
   workflow_dispatch:
@@ -35,30 +35,35 @@ jobs:
       - name: 6. 安装前端依赖
         run: npm install
 
-      - name: 7. 配置 Android 环境 (安装 SDK 34 和 NDK 26)
+      - name: 7. 配置 Android 环境
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
           export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
           yes | sdkmanager --licenses || true
-          # 关键：安装 android-34 和 ndk 26，这是 Tauri 2.0 默认需要的
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "PATH=$PATH" >> $GITHUB_ENV
 
-      - name: 8. 初始化 Android (直接传参，确保成功)
-        # 关键修复：直接把包名作为参数，不再用 echo 管道
-        run: npm run tauri android init com.iptv.player.app
+      - name: 8. 初始化 Android (使用 yes 命令自动回答)
+        # 关键修复：使用 yes 命令不断输入包名，直到 init 完成
+        run: yes "com.iptv.player.app" | npm run tauri android init
 
-      - name: 8.5. 检查并修复权限 (调试用)
+      - name: 8.5. 关键修复：手动写入 SDK 路径并修复权限
         run: |
-          echo "--- 检查 gen/android 目录 ---"
-          ls -la src-tauri/gen/android/
-          echo "--- 检查 local.properties ---"
-          cat src-tauri/gen/android/local.properties || echo "未找到 local.properties"
-          echo "--- 修复权限 ---"
+          # 1. 确保 gen/android 目录存在
+          mkdir -p src-tauri/gen/android
+          
+          # 2. 手动创建 local.properties，告诉 Gradle SDK 在哪里（解决 BeforeSpawn 错误）
+          echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
+          echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
+          echo "✅ local.properties 已创建"
+          cat src-tauri/gen/android/local.properties
+          
+          # 3. 修复 gradlew 执行权限
           chmod +x src-tauri/gen/android/gradlew
           chmod +x src-tauri/gen/android/gradle/wrapper/gradle-wrapper.jar || true
+          echo "✅ 权限已修复"
 
       - name: 9. 允许 HTTP
         run: |
@@ -67,7 +72,7 @@ jobs:
             sed -i 's/<application/<application\n        android:usesCleartextTraffic="true"/' "$MANIFEST_PATH"
             echo "✅ HTTP 配置完成"
           else
-            echo "⚠️ 警告：AndroidManifest.xml 未找到，初始化可能失败"
+            echo "⚠️ 警告：AndroidManifest.xml 未找到"
           fi
 
       - name: 10. 编译 APK
@@ -76,5 +81,5 @@ jobs:
       - name: 11. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v9-final-success
+          name: iptv-apk-v10-success
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
