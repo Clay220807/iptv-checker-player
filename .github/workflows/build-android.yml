@@ -1,4 +1,4 @@
-name: Build Android APK (V6 Java Fixed)
+name: Build Android APK (V7 Native)
 
 on:
   workflow_dispatch:
@@ -21,7 +21,6 @@ jobs:
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
-      # 【关键修复】：必须最先安装 Java 17，否则后面的安卓工具会报错
       - name: 4. 安装 Java 17 (JDK)
         uses: actions/setup-java@v4
         with:
@@ -36,16 +35,28 @@ jobs:
       - name: 6. 安装前端依赖
         run: npm install
 
-      - name: 7. 配置 Android SDK (现在环境里已经是 Java 17 了，不会报错了)
-        uses: android-actions/setup-android@v3
-      
-      - name: 8. 安装 Android 组件
-        run: sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+      - name: 7. 配置 Android 环境 (使用系统自带 SDK，最稳定)
+        run: |
+          # 设置系统预装的 Android SDK 路径
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+          
+          # 自动接受所有协议
+          yes | sdkmanager --licenses || true
+          
+          # 安装必要的组件和 NDK
+          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+          
+          # 【关键】：把环境变量写入系统，让后面的步骤都能读到
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "✅ Android 环境配置完成"
 
-      - name: 9. 初始化 Android (输入包名)
+      - name: 8. 初始化 Android (输入包名)
         run: echo "com.iptv.player.app" | npm run tauri android init || true
 
-      - name: 10. 允许 HTTP
+      - name: 9. 允许 HTTP
         run: |
           MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
@@ -53,13 +64,11 @@ jobs:
             echo "✅ HTTP 配置完成"
           fi
 
-      - name: 11. 编译 APK
+      - name: 10. 编译 APK
         run: npx tauri android build --debug --target aarch64
-        env:
-          NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
-      - name: 12. 上传
+      - name: 11. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v6-success
+          name: iptv-apk-v7-final
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
