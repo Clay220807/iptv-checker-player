@@ -1,0 +1,50 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch: # 允许在网页上手动点击触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 获取代码
+        uses: actions/checkout@v4
+
+      - name: 2. 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 3. 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 4. 安装 Linux 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: 5. 安装前端依赖
+        run: npm install
+
+      - name: 6. 配置 Android SDK 和 NDK
+        uses: android-actions/setup-android@v3
+      - run: |
+          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+
+      - name: 7. 初始化 Android 并自动修复 HTTP 访问权限
+        run: |
+          # 初始化 Android 项目
+          npm run tauri android init
+          # 自动在 AndroidManifest.xml 中添加允许 HTTP 明文传输的配置
+          sed -i 's/<application/<application\n        android:usesCleartextTraffic="true"/' src-tauri/gen/android/app/src/main/AndroidManifest.xml
+
+      - name: 8. 开始编译 Android APK (Debug版，带默认签名可直接安装)
+        run: npx tauri android build --debug
+        env:
+          NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+
+      - name: 9. 上传编译好的 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-checker-player-android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
