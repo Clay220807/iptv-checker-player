@@ -1,11 +1,10 @@
-name: Build Android APK (Stable V2)
+name: Build Android APK (V3 Fixed)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    # 关键点：锁定使用 ubuntu-22.04，避开最新的 ubuntu-24.04 的兼容性问题
     runs-on: ubuntu-22.04
     
     steps:
@@ -17,8 +16,10 @@ jobs:
         with:
           node-version: 20
 
-      - name: 3. 安装 Rust
+      - name: 3. 安装 Rust 及 Android 编译目标 (关键修复)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
       - name: 4. 安装 Linux 系统依赖
         run: |
@@ -35,28 +36,24 @@ jobs:
         run: |
           sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-      - name: 8. 初始化 Android 项目 (自动输入包名，防止卡住)
-        # 使用 echo 管道自动输入一个默认的包名，防止脚本等待用户输入而超时
-        run: echo "com.iptv.player.app" | npm run tauri android init || true
+      - name: 8. 初始化 Android 项目 (自动输入包名)
+        # 使用 yes 命令自动循环输入包名，防止脚本卡住等待
+        run: yes "com.iptv.player.app" | npm run tauri android init || true
 
       - name: 9. 修改配置以允许 HTTP (关键步骤)
         run: |
           MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
-            # 检查是否已经修改过，防止重复
             if ! grep -q "usesCleartextTraffic" "$MANIFEST_PATH"; then
-              # 插入允许 HTTP 明文的配置
               sed -i 's/<application/<application\n        android:usesCleartextTraffic="true"/' "$MANIFEST_PATH"
-              echo "✅ AndroidManifest 修改成功，已允许 HTTP 连接"
-            else
-              echo "ℹ️ AndroidManifest 已经包含 HTTP 配置"
+              echo "✅ AndroidManifest 修改成功"
             fi
           else
-            echo "️ 警告：没找到 AndroidManifest.xml，可能初始化失败，尝试继续编译..."
+            echo "⚠️ 未找到 AndroidManifest.xml，尝试继续..."
           fi
 
-      - name: 10. 开始编译 APK (Debug 版)
-        run: npx tauri android build --debug
+      - name: 10. 开始编译 APK (Debug 版，针对 arm64 手机)
+        run: npx tauri android build --debug --target aarch64
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
@@ -64,4 +61,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iptv-checker-player-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
+          # 尝试多个可能的路径，确保能抓到文件
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
