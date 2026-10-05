@@ -1,10 +1,10 @@
-name: Build Android APK (V12 Diagnostic)
+name: Build Android APK (V14 Identifier Fix)
 
 on:
   workflow_dispatch:
 
 jobs:
-  diagnose:
+  build:
     runs-on: ubuntu-22.04
     
     steps:
@@ -16,8 +16,10 @@ jobs:
         with:
           node-version: 20
 
-      - name: 3. 安装 Rust
+      - name: 3. 安装 Rust 及 Android 目标
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
       - name: 4. 安装 Java 17
         uses: actions/setup-java@v4
@@ -37,43 +39,46 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: 7. 检查 tauri.conf.json
+      - name: 7. 【关键修复】自动修正非法的 Android 包名
         run: |
-          echo "=== tauri.conf.json 内容 ==="
-          cat src-tauri/tauri.conf.json
-          echo ""
-          echo "=== 检查是否有 Android 配置 ==="
-          grep -i "android" src-tauri/tauri.conf.json || echo "❌ 没有找到 Android 配置"
+          # 使用 Node.js 读取并修改 tauri.conf.json，将非法的横杠包名改为合法的
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            conf.identifier = 'com.iptv.player.app';
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2));
+            console.log('✅ 包名已修改为: com.iptv.player.app');
+          "
 
-      - name: 8. 尝试初始化 Android (交互式)
+      - name: 8. 初始化 Android (现在包名合法了，直接运行即可)
+        run: npm run tauri android init
+
+      - name: 9. 修复权限与配置
         run: |
-          echo "=== 开始 tauri android init ==="
-          # 使用 expect 工具来自动回答交互式问题
-          sudo apt-get install -y expect
+          # 修复 gradlew 换行符和权限
+          if [ -f "src-tauri/gen/android/gradlew" ]; then
+            sed -i 's/\r$//' src-tauri/gen/android/gradlew
+            chmod +x src-tauri/gen/android/gradlew
+            echo "✅ gradlew 权限已修复"
+          fi
           
-          expect << 'EOF'
-          spawn npm run tauri android init
-          expect {
-            "Identifier" {
-              send "com.iptv.player.app\r"
-              exp_continue
-            }
-            "App Name" {
-              send "IPTV Player\r"
-              exp_continue
-            }
-            eof
-          }
-          EOF
-          
-          echo "=== 初始化完成，检查生成的文件 ==="
-          ls -la src-tauri/gen/android/ || echo "❌ gen/android 目录不存在"
-          ls -la src-tauri/gen/android/app/ || echo " app 目录不存在"
+          # 配置 SDK 路径
+          echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
+          echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
 
-      - name: 9. 上传诊断信息
+      - name: 10. 允许 HTTP
+        run: |
+          MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ]; then
+            sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST_PATH"
+            echo "✅ HTTP 配置完成"
+          fi
+
+      - name: 11. 编译 APK
+        run: npx tauri android build --debug --target aarch64
+
+      - name: 12. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: diagnostic-info
-          path: |
-            src-tauri/tauri.conf.json
-            src-tauri/gen/android/
+          name: iptv-player-android-apk-final
+          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
