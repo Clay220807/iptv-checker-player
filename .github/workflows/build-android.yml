@@ -1,36 +1,29 @@
-name: Build Android APK (V11 Deep Fix)
+name: Build Android APK (V12 Diagnostic)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-22.04
     
     steps:
       - name: 1. 获取代码
         uses: actions/checkout@v4
-        with:
-          # 关键：确保 git checkout 时保留文件原本的换行符，防止自动转成 CRLF
-          submodules: recursive
 
       - name: 2. 安装 Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: 3. 安装 Rust 及 Android 目标
+      - name: 3. 安装 Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
-      - name: 4. 安装 Java 17 (JDK)
+      - name: 4. 安装 Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      # 注意：去掉了 Linux 桌面依赖，安卓编译不需要它们，减少报错点
 
       - name: 5. 安装前端依赖
         run: npm install
@@ -43,49 +36,44 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "PATH=$PATH" >> $GITHUB_ENV
 
-      - name: 7. 初始化 Android (直接回车使用默认包名)
-        # 关键修复：发送一个空行（回车），让 Tauri 使用 tauri.conf.json 里的默认 identifier
-        run: printf "\n" | npm run tauri android init
-
-      - name: 8. 关键修复：处理换行符、权限与 SDK 路径
+      - name: 7. 检查 tauri.conf.json
         run: |
-          echo "--- 检查 gen/android 目录 ---"
-          ls -la src-tauri/gen/android/ || echo "目录不存在"
-          
-          # 1. 修复 gradlew 的 Windows 换行符问题 (这是 BeforeSpawn 错误的元凶)
-          if [ -f "src-tauri/gen/android/gradlew" ]; then
-            sed -i 's/\r$//' src-tauri/gen/android/gradlew
-            echo "✅ 已修复 gradlew 换行符"
-          fi
-          
-          # 2. 赋予执行权限
-          chmod +x src-tauri/gen/android/gradlew
-          chmod +x src-tauri/gen/android/gradle/wrapper/gradle-wrapper.jar || true
-          
-          # 3. 确保 local.properties 正确 (告诉 Gradle SDK 在哪)
-          echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
-          echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
-          echo "✅ local.properties 已配置"
+          echo "=== tauri.conf.json 内容 ==="
+          cat src-tauri/tauri.conf.json
+          echo ""
+          echo "=== 检查是否有 Android 配置 ==="
+          grep -i "android" src-tauri/tauri.conf.json || echo "❌ 没有找到 Android 配置"
 
-      - name: 9. 允许 HTTP (修改 AndroidManifest)
+      - name: 8. 尝试初始化 Android (交互式)
         run: |
-          MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST_PATH" ]; then
-            # 使用更安全的 sed 替换
-            sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST_PATH"
-            echo "✅ HTTP 配置完成"
-          else
-            echo "⚠️ 警告：AndroidManifest.xml 未找到"
-          fi
+          echo "=== 开始 tauri android init ==="
+          # 使用 expect 工具来自动回答交互式问题
+          sudo apt-get install -y expect
+          
+          expect << 'EOF'
+          spawn npm run tauri android init
+          expect {
+            "Identifier" {
+              send "com.iptv.player.app\r"
+              exp_continue
+            }
+            "App Name" {
+              send "IPTV Player\r"
+              exp_continue
+            }
+            eof
+          }
+          EOF
+          
+          echo "=== 初始化完成，检查生成的文件 ==="
+          ls -la src-tauri/gen/android/ || echo "❌ gen/android 目录不存在"
+          ls -la src-tauri/gen/android/app/ || echo " app 目录不存在"
 
-      - name: 10. 编译 APK
-        # 增加 --verbose 以便如果还失败能看到更详细的日志
-        run: npx tauri android build --debug --target aarch64
-
-      - name: 11. 上传
+      - name: 9. 上传诊断信息
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v11-final
-          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
+          name: diagnostic-info
+          path: |
+            src-tauri/tauri.conf.json
+            src-tauri/gen/android/
