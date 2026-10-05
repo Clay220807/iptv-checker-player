@@ -1,16 +1,18 @@
-name: Build Android APK
+name: Build Android APK (Stable V2)
 
 on:
-  workflow_dispatch: # 允许在网页上手动点击触发
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 关键点：锁定使用 ubuntu-22.04，避开最新的 ubuntu-24.04 的兼容性问题
+    runs-on: ubuntu-22.04
+    
     steps:
       - name: 1. 获取代码
         uses: actions/checkout@v4
 
-      - name: 2. 安装 Node.js
+      - name: 2. 安装 Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -18,32 +20,47 @@ jobs:
       - name: 3. 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 4. 安装 Linux 依赖
+      - name: 4. 安装 Linux 系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
 
       - name: 5. 安装前端依赖
         run: npm install
 
       - name: 6. 配置 Android SDK 和 NDK
         uses: android-actions/setup-android@v3
-      - run: |
+      
+      - name: 7. 安装具体的 Android 组件
+        run: |
           sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-      - name: 7. 初始化 Android 并自动修复 HTTP 访问权限
-        run: |
-          # 初始化 Android 项目
-          npm run tauri android init
-          # 自动在 AndroidManifest.xml 中添加允许 HTTP 明文传输的配置
-          sed -i 's/<application/<application\n        android:usesCleartextTraffic="true"/' src-tauri/gen/android/app/src/main/AndroidManifest.xml
+      - name: 8. 初始化 Android 项目 (自动输入包名，防止卡住)
+        # 使用 echo 管道自动输入一个默认的包名，防止脚本等待用户输入而超时
+        run: echo "com.iptv.player.app" | npm run tauri android init || true
 
-      - name: 8. 开始编译 Android APK (Debug版，带默认签名可直接安装)
+      - name: 9. 修改配置以允许 HTTP (关键步骤)
+        run: |
+          MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ]; then
+            # 检查是否已经修改过，防止重复
+            if ! grep -q "usesCleartextTraffic" "$MANIFEST_PATH"; then
+              # 插入允许 HTTP 明文的配置
+              sed -i 's/<application/<application\n        android:usesCleartextTraffic="true"/' "$MANIFEST_PATH"
+              echo "✅ AndroidManifest 修改成功，已允许 HTTP 连接"
+            else
+              echo "ℹ️ AndroidManifest 已经包含 HTTP 配置"
+            fi
+          else
+            echo "️ 警告：没找到 AndroidManifest.xml，可能初始化失败，尝试继续编译..."
+          fi
+
+      - name: 10. 开始编译 APK (Debug 版)
         run: npx tauri android build --debug
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
-      - name: 9. 上传编译好的 APK
+      - name: 11. 上传成果
         uses: actions/upload-artifact@v4
         with:
           name: iptv-checker-player-android-apk
