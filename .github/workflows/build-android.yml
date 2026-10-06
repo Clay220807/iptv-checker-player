@@ -1,4 +1,4 @@
-name: Build Android APK (V19 Final)
+name: Build Android APK (V20 Ultimate Fix)
 
 on:
   workflow_dispatch:
@@ -30,61 +30,57 @@ jobs:
       - name: 5. 安装前端依赖
         run: npm install
 
-      - name: 6. 配置 Android 环境（使用系统原生 SDK，不用第三方插件）
+      - name: 6. 配置 Android 环境（使用系统原生 SDK）
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
           export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
-          
-          # 接受所有协议
           yes | sdkmanager --licenses || true
-          
-          # 安装必要的组件
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
-          
-          # 设置环境变量
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "✅ Android 环境配置完成"
 
-      - name: 7. 修改包名（修复非法横杠）
+      - name: 7. 【关键】精准修复 tauri.conf.json (去掉空格，修改包名)
         run: |
-          node -e "
-            const fs = require('fs');
-            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-            conf.identifier = 'com.iptv.player.app';
-            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2));
-            console.log('✅ 包名已修改为 com.iptv.player.app');
-          "
+          CONF="src-tauri/tauri.conf.json"
+          # 1. 修复 identifier 键名 (去掉空格)
+          sed -i 's/"identifier "/"identifier"/g' $CONF
+          # 2. 修复 identifier 值 (去掉空格，改为合法包名)
+          sed -i 's/"com.zhimin-dev.iptv-checker-player "/"com.iptv.player.app"/g' $CONF
+          # 3. 修复其他可能带空格的键名 (通用修复)
+          sed -i 's/"\([a-zA-Z0-9_]*\) "/"\1"/g' $CONF
+          echo "✅ 配置文件已修复"
+          cat $CONF | grep identifier
 
-      - name: 8. 初始化 Android 项目
+      - name: 8. 初始化 Android (使用 expect)
         run: |
           sudo apt-get install -y expect
           expect << 'EOF'
           spawn npm run tauri android init
           expect {
-            "Identifier" {
-              send "com.iptv.player.app\r"
-              exp_continue
-            }
-            "App Name" {
-              send "IPTV Player\r"
-              exp_continue
-            }
+            "Identifier" { send "com.iptv.player.app\r"; exp_continue }
+            "App Name" { send "IPTV Player\r"; exp_continue }
             eof
           }
           EOF
-          echo "✅ Android 初始化完成"
+          echo "✅ 初始化完成"
 
-      - name: 9. 修复 gradlew 权限和换行符
+      - name: 9. 【关键】修复并锁定 gradlew
         run: |
           GRADLEW="src-tauri/gen/android/gradlew"
           if [ -f "$GRADLEW" ]; then
-            # 彻底删除 Windows 换行符
-            tr -d '\r' < "$GRADLEW" > "${GRADLEW}.tmp" && mv "${GRADLEW}.tmp" "$GRADLEW"
-            # 赋予执行权限
-            chmod 777 "$GRADLEW"
-            echo "✅ gradlew 已修复"
+            # 1. 安装 dos2unix 并彻底转换换行符
+            sudo apt-get install -y dos2unix
+            dos2unix "$GRADLEW"
+            
+            # 2. 赋予执行权限
+            chmod +x "$GRADLEW"
+            
+            # 3. 设为只读 (防止 tauri sync 覆盖它)
+            chmod 444 "$GRADLEW"
+            
+            echo "✅ gradlew 已修复并锁定"
+            head -n 1 "$GRADLEW"
           else
             echo "❌ gradlew 未找到"
             exit 1
@@ -93,7 +89,6 @@ jobs:
           # 配置 SDK 路径
           echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
           echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
-          echo "✅ local.properties 已配置"
 
       - name: 10. 允许 HTTP
         run: |
@@ -109,5 +104,5 @@ jobs:
       - name: 12. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v19-final
+          name: iptv-apk-v20-success
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
