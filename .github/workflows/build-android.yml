@@ -1,4 +1,4 @@
-name: Build Android APK (V21 Manual Build)
+name: Build Android APK (V22 Last Attempt)
 
 on:
   workflow_dispatch:
@@ -39,31 +39,33 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: 7. 【关键】修复 tauri.conf.json (去掉空格，修改包名)
+      - name: 7. 修复 tauri.conf.json
         run: |
-          node -e "
-            const fs = require('fs');
-            const file = 'src-tauri/tauri.conf.json';
-            let content = fs.readFileSync(file, 'utf8');
-            
-            // 1. 修复 identifier 的值 (去掉空格，改为合法包名)
-            content = content.replace(/\"com\.zhimin-dev\.iptv-checker-player\s*\"/g, '\"com.iptv.player.app\"');
-            
-            // 2. 修复 identifier 的键名 (去掉空格)
-            content = content.replace(/\"identifier\s*\"/g, '\"identifier\"');
-            
-            // 3. 修复其他带空格的键名 (通用修复，如 \"productName \")
-            content = content.replace(/\"([a-zA-Z0-9_]+)\s*\"/g, '\"$1\"');
-            
-            // 4. 修复值末尾的空格 (针对普通字符串值)
-            content = content.replace(/:\s*\"([^\"]*?)\s*\"/g, ': \"$1\"');
-            
-            fs.writeFileSync(file, content);
-            console.log('✅ 配置文件已修复');
-          "
-          cat src-tauri/tauri.conf.json | grep identifier
+          # 使用 Python 来修复（比 Node 更可靠）
+          python3 << 'PYEOF'
+          import json
+          import re
+          
+          with open('src-tauri/tauri.conf.json', 'r') as f:
+              content = f.read()
+          
+          # 修复键名和值中的空格
+          content = re.sub(r'"(\w+)\s*":\s*"([^"]*)\s*"', r'"\1": "\2"', content)
+          
+          # 修改 identifier
+          content = content.replace('com.zhimin-dev.iptv-checker-player', 'com.iptv.player.app')
+          
+          with open('src-tauri/tauri.conf.json', 'w') as f:
+              f.write(content)
+          
+          print("✅ 配置文件已修复")
+          PYEOF
+          
+          # 验证修复结果
+          echo "=== 修复后的 identifier ==="
+          grep -i "identifier" src-tauri/tauri.conf.json || echo "❌ 未找到 identifier"
 
-      - name: 8. 初始化 Android 项目
+      - name: 8. 初始化 Android
         run: |
           sudo apt-get install -y expect
           expect << 'EOF'
@@ -75,26 +77,22 @@ jobs:
           }
           EOF
 
-      - name: 9. 同步 Android 资源 (生成完整的 gradle 项目)
+      - name: 9. 同步资源
         run: npm run tauri android sync
 
-      - name: 10. 【关键】手动修复 gradlew 并赋予权限
+      - name: 10. 修复 gradlew
         run: |
           GRADLEW="src-tauri/gen/android/gradlew"
           if [ -f "$GRADLEW" ]; then
-            # 1. 安装 dos2unix 并转换换行符
             sudo apt-get install -y dos2unix
             dos2unix "$GRADLEW"
-            
-            # 2. 赋予执行权限 (不要锁定，因为后面要运行它)
             chmod +x "$GRADLEW"
-            echo "✅ gradlew 已修复并赋予权限"
+            echo "✅ gradlew 已修复"
           else
             echo "❌ gradlew 未找到"
             exit 1
           fi
           
-          # 配置 SDK 路径
           echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
           echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
 
@@ -106,15 +104,13 @@ jobs:
             echo "✅ HTTP 配置完成"
           fi
 
-      - name: 12. 【关键】手动编译 APK (绕过 tauri build)
+      - name: 12. 编译 APK
         run: |
           cd src-tauri/gen/android
-          # 直接调用 gradlew 编译 debug 版
           ./gradlew assembleDebug
-          echo "✅ 编译完成"
 
       - name: 13. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v21-success
+          name: iptv-apk-v22
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
