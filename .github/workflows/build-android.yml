@@ -1,4 +1,4 @@
-name: Build Android APK (V22 Last Attempt)
+name: Build Android APK (V23 Rewritten)
 
 on:
   workflow_dispatch:
@@ -38,34 +38,67 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "PATH=$PATH" >> $GITHUB_ENV
 
-      - name: 7. 修复 tauri.conf.json
+      - name: 7. 【关键】完全重写 tauri.conf.json
         run: |
-          # 使用 Python 来修复（比 Node 更可靠）
-          python3 << 'PYEOF'
-          import json
-          import re
-          
-          with open('src-tauri/tauri.conf.json', 'r') as f:
-              content = f.read()
-          
-          # 修复键名和值中的空格
-          content = re.sub(r'"(\w+)\s*":\s*"([^"]*)\s*"', r'"\1": "\2"', content)
-          
-          # 修改 identifier
-          content = content.replace('com.zhimin-dev.iptv-checker-player', 'com.iptv.player.app')
-          
-          with open('src-tauri/tauri.conf.json', 'w') as f:
-              f.write(content)
-          
-          print("✅ 配置文件已修复")
-          PYEOF
-          
-          # 验证修复结果
-          echo "=== 修复后的 identifier ==="
-          grep -i "identifier" src-tauri/tauri.conf.json || echo "❌ 未找到 identifier"
+          cat > src-tauri/tauri.conf.json << 'EOF'
+          {
+            "$schema": "https://schema.tauri.app/config/2",
+            "productName": "iptv-checker-player",
+            "version": "0.1.0",
+            "identifier": "com.iptv.player.app",
+            "build": {
+              "beforeDevCommand": "npm run dev",
+              "devUrl": "http://127.0.0.1:5173",
+              "beforeBuildCommand": "npm run build",
+              "frontendDist": "../dist"
+            },
+            "app": {
+              "windows": [
+                {
+                  "title": "iptv-checker-player",
+                  "label": "main",
+                  "width": 1180,
+                  "height": 760,
+                  "minWidth": 380,
+                  "minHeight": 600,
+                  "center": true,
+                  "resizable": true
+                }
+              ],
+              "security": {
+                "csp": null
+              }
+            },
+            "bundle": {
+              "active": true,
+              "targets": "all",
+              "category": "Entertainment",
+              "shortDescription": "IPTV player client",
+              "longDescription": "Jellyfin-like IPTV client",
+              "icon": [
+                "icons/32x32.png",
+                "icons/128x128.png",
+                "icons/128x128@2x.png",
+                "icons/icon.icns",
+                "icons/icon.ico"
+              ]
+            }
+          }
+          EOF
+          echo "✅ 配置文件已完全重写"
+          cat src-tauri/tauri.conf.json | grep identifier
 
-      - name: 8. 初始化 Android
+      - name: 8. 检查 Tauri CLI 版本和可用命令
+        run: |
+          echo "=== Tauri CLI 版本 ==="
+          npm run tauri -- --version || npx tauri --version
+          
+          echo "=== Android 可用命令 ==="
+          npm run tauri android -- --help || npx tauri android --help
+
+      - name: 9. 初始化 Android 项目
         run: |
           sudo apt-get install -y expect
           expect << 'EOF'
@@ -76,11 +109,10 @@ jobs:
             eof
           }
           EOF
+          echo "✅ 初始化完成"
+          ls -la src-tauri/gen/android/ || echo "❌ 目录未生成"
 
-      - name: 9. 同步资源
-        run: npm run tauri android sync
-
-      - name: 10. 修复 gradlew
+      - name: 10. 修复 gradlew 权限
         run: |
           GRADLEW="src-tauri/gen/android/gradlew"
           if [ -f "$GRADLEW" ]; then
@@ -104,13 +136,15 @@ jobs:
             echo "✅ HTTP 配置完成"
           fi
 
-      - name: 12. 编译 APK
+      - name: 12. 编译 APK (使用 tauri android build)
         run: |
-          cd src-tauri/gen/android
-          ./gradlew assembleDebug
+          npx tauri android build --debug --target aarch64
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
 
       - name: 13. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v22
+          name: iptv-apk-v23
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
