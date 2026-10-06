@@ -1,4 +1,4 @@
-name: Build Android APK (V14 Identifier Fix)
+name: Build Android APK (V17 Ultimate)
 
 on:
   workflow_dispatch:
@@ -39,27 +39,49 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: 7. 【关键修复】自动修正非法的 Android 包名
+      - name: 7. 【关键】自动修正非法包名
         run: |
-          # 使用 Node.js 读取并修改 tauri.conf.json，将非法的横杠包名改为合法的
           node -e "
             const fs = require('fs');
             const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
             conf.identifier = 'com.iptv.player.app';
             fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2));
-            console.log('✅ 包名已修改为: com.iptv.player.app');
+            console.log('✅ 包名已修改');
           "
 
-      - name: 8. 初始化 Android (现在包名合法了，直接运行即可)
-        run: npm run tauri android init
-
-      - name: 9. 修复权限与配置
+      - name: 8. 初始化 Android (使用 expect 确保交互成功)
         run: |
-          # 修复 gradlew 换行符和权限
-          if [ -f "src-tauri/gen/android/gradlew" ]; then
-            sed -i 's/\r$//' src-tauri/gen/android/gradlew
-            chmod +x src-tauri/gen/android/gradlew
-            echo "✅ gradlew 权限已修复"
+          sudo apt-get install -y expect
+          expect << 'EOF'
+          spawn npm run tauri android init
+          expect {
+            "Identifier" {
+              send "com.iptv.player.app\r"
+              exp_continue
+            }
+            "App Name" {
+              send "IPTV Player\r"
+              exp_continue
+            }
+            eof
+          }
+          EOF
+          echo "✅ 初始化完成"
+
+      - name: 9. 【暴力修复】gradlew 权限与换行符
+        run: |
+          GRADLEW="src-tauri/gen/android/gradlew"
+          if [ -f "$GRADLEW" ]; then
+            # 1. 使用 tr 彻底删除所有 \r (比 sed 更彻底)
+            tr -d '\r' < "$GRADLEW" > "${GRADLEW}.tmp" && mv "${GRADLEW}.tmp" "$GRADLEW"
+            # 2. 赋予最高执行权限
+            chmod 777 "$GRADLEW"
+            # 3. 确保第一行 Shebang 正确
+            head -n 1 "$GRADLEW"
+            echo "✅ gradlew 已彻底修复"
+          else
+            echo "❌ gradlew 未找到，初始化可能失败"
+            exit 1
           fi
           
           # 配置 SDK 路径
@@ -80,5 +102,5 @@ jobs:
       - name: 12. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-player-android-apk-final
+          name: iptv-player-apk-v17
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
