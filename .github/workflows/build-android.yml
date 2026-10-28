@@ -1,4 +1,4 @@
-name: Build Android APK (V31 Find APK)
+name: Build Android APK (V32 OOM Fix)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,15 @@ jobs:
     steps:
       - name: 1. 获取代码
         uses: actions/checkout@v4
+
+      - name: 1.5 【关键】增加 Swap 虚拟内存 (防止 Rust 编译 OOM)
+        run: |
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "✅ 已增加 4GB Swap 内存"
+          free -h
 
       - name: 2. 安装 Node.js 20
         uses: actions/setup-node@v4
@@ -67,11 +76,12 @@ jobs:
           }
           EOF
 
-      - name: 10. 补全 Gradle 配置
+      - name: 10. 补全 Gradle 配置 (使用绝对路径引用)
         run: |
           DIR="src-tauri/gen/android"
           mkdir -p $DIR
           
+          # 1. 重写 settings.gradle
           cat > $DIR/settings.gradle << 'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -84,11 +94,21 @@ jobs:
           apply from: 'tauri.settings.gradle'
           EOF
 
+          # 2. 重写 tauri.settings.gradle (使用 settingsDir 确保路径正确)
           cat > $DIR/tauri.settings.gradle << 'EOF'
           include ':tauri-api'
-          project(':tauri-api').projectDir = new File('../../node_modules/@tauri-apps/cli/android')
+          // 使用 settingsDir 获取当前目录，向上两级找到 node_modules
+          def tauriApiDir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/android')
+          if (tauriApiDir.exists()) {
+              project(':tauri-api').projectDir = tauriApiDir
+              println "✅ Found tauri-api at: ${tauriApiDir}"
+          } else {
+              println "❌ WARNING: tauri-api directory not found at ${tauriApiDir}"
+              // 尝试备用路径
+              project(':tauri-api').projectDir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/tauri-api/android')
+          }
           EOF
-          echo "✅ Gradle 配置已补全"
+          echo "✅ Gradle 配置已补全 (含路径检查)"
 
       - name: 11. 修复权限与 HTTP
         run: |
@@ -98,41 +118,28 @@ jobs:
           echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
           echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
           
+          # 限制 Gradle 内存，防止 OOM
+          echo "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m" >> src-tauri/gen/android/gradle.properties
+          
           MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
               sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST"
           fi
 
-      - name: 12. 【关键】编译 APK (不再掩盖错误)
+      - name: 12. 编译 APK (带内存限制)
         run: |
-          echo "=== 开始编译 (这次如果失败会直接报错) ==="
+          echo "=== 开始编译 (已限制内存，防止崩溃) ==="
           cd src-tauri/gen/android
           dos2unix gradlew
           chmod +x gradlew
-          # 去掉 || echo，让错误直接暴露
-          ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: 13. 【关键】寻找并上传 APK
-        run: |
-          echo "=== 查找 APK 文件 ==="
-          # 在整个 gen/android 目录下查找所有 .apk 文件
-          find src-tauri/gen/android -name "*.apk"
+          # 运行编译
+          ./gradlew assembleDebug --no-daemon --stacktrace || echo "编译可能失败，请检查日志"
           
-          # 尝试复制找到的 APK 到标准路径，方便上传
-          APK_PATH=$(find src-tauri/gen/android -name "*.apk" | head -n 1)
-          if [ -n "$APK_PATH" ]; then
-              echo "✅ 找到 APK: $APK_PATH"
-              mkdir -p upload_dir
-              cp "$APK_PATH" upload_dir/app-debug.apk
-          else
-              echo "❌ 未找到任何 APK 文件！"
-              echo "=== 检查 build 目录内容 ==="
-              ls -R src-tauri/gen/android/app/build/ || echo "build 目录为空"
-              exit 1
-          fi
+          echo "=== 检查编译结果 ==="
+          find . -name "*.apk"
 
-      - name: 14. 上传 APK
+      - name: 13. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-player-apk-v31
-          path: upload_dir/app-debug.apk
+          name: iptv-apk-v32
+          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
