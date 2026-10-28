@@ -1,4 +1,4 @@
-name: Build Android APK (V33 Swap Fix)
+name: Build Android APK (V34 Strict Mode)
 
 on:
   workflow_dispatch:
@@ -11,15 +11,12 @@ jobs:
       - name: 1. 获取代码
         uses: actions/checkout@v4
 
-      - name: 1.5 【关键】增加 Swap 虚拟内存 (使用 dd 命令)
+      - name: 1.5 增加 Swap 内存
         run: |
-          echo "=== 创建 4GB Swap 文件 ==="
-          # 使用 dd 在 /tmp 目录下创建 swap 文件（更兼容）
           sudo dd if=/dev/zero of=/tmp/swapfile bs=1M count=4096
           sudo chmod 600 /tmp/swapfile
           sudo mkswap /tmp/swapfile
           sudo swapon /tmp/swapfile
-          echo "✅ Swap 已启用"
           free -h
 
       - name: 2. 安装 Node.js 20
@@ -60,7 +57,6 @@ jobs:
           config = json.loads(cleaned)
           config['identifier'] = 'com.iptv.player.app'
           with open('src-tauri/tauri.conf.json', 'w') as f: json.dump(config, f, indent=2)
-          print("✅ 配置已修复")
           PYEOF
 
       - name: 8. 清理旧目录
@@ -82,31 +78,18 @@ jobs:
         run: |
           DIR="src-tauri/gen/android"
           mkdir -p $DIR
-          
           cat > $DIR/settings.gradle << 'EOF'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositories { google(); mavenCentral() }
-          }
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
           rootProject.name = "iptv-checker-player"
           include ':app'
           apply from: 'tauri.settings.gradle'
           EOF
-
           cat > $DIR/tauri.settings.gradle << 'EOF'
           include ':tauri-api'
-          def tauriApiDir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/android')
-          if (tauriApiDir.exists()) {
-              project(':tauri-api').projectDir = tauriApiDir
-              println "✅ Found tauri-api at: ${tauriApiDir}"
-          } else {
-              println "❌ WARNING: tauri-api not found at ${tauriApiDir}"
-              project(':tauri-api').projectDir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/tauri-api/android')
-          }
+          def dir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/android')
+          project(':tauri-api').projectDir = dir.exists() ? dir : new File(settingsDir, '../../node_modules/@tauri-apps/cli/tauri-api/android')
           EOF
-          echo "✅ Gradle 配置已补全"
 
       - name: 11. 修复权限与 HTTP
         run: |
@@ -115,28 +98,34 @@ jobs:
           chmod +x src-tauri/gen/android/gradlew
           echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
           echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
-          
-          # 限制 Gradle 内存
-          echo "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m" >> src-tauri/gen/android/gradle.properties
+          echo "org.gradle.jvmargs=-Xmx2048m" >> src-tauri/gen/android/gradle.properties
           
           MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-              sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST"
-          fi
+          [ -f "$MANIFEST" ] && sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST"
 
-      - name: 12. 编译 APK
+      - name: 12. 【关键】编译 APK (严格模式，失败即报错)
         run: |
-          echo "=== 开始编译 ==="
+          echo "=== 开始编译 (如果失败请直接看这里的红色报错) ==="
           cd src-tauri/gen/android
           dos2unix gradlew
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace || echo "编译可能失败"
-          
-          echo "=== 查找 APK ==="
-          find . -name "*.apk"
+          # 注意：这里去掉了 || echo，如果编译失败，任务会直接变红停止
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: 13. 上传 APK
+      - name: 13. 查找并上传
+        run: |
+          echo "=== 查找 APK ==="
+          APK=$(find src-tauri/gen/android -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+             echo "❌ 没找到 APK！"
+             exit 1
+          fi
+          echo "✅ 找到 APK: $APK"
+          mkdir -p final_output
+          cp "$APK" final_output/iptv-player.apk
+
+      - name: 14. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v33
-          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
+          name: iptv-player-final
+          path: final_output/iptv-player.apk
