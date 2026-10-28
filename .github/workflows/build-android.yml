@@ -1,4 +1,4 @@
-name: Build Android APK (V30 Manual Gradle Fix)
+name: Build Android APK (V31 Find APK)
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: 7. 修复 tauri.conf.json (Python 清理空格)
+      - name: 7. 修复 tauri.conf.json
         run: |
           python3 << 'PYEOF'
           import json, re
@@ -55,7 +55,7 @@ jobs:
       - name: 8. 清理旧目录
         run: rm -rf src-tauri/gen/android
 
-      - name: 9. 初始化 Android (允许半失败)
+      - name: 9. 初始化 Android
         run: |
           sudo apt-get install -y expect
           expect << 'EOF' || true
@@ -66,84 +66,73 @@ jobs:
             eof
           }
           EOF
-          echo "=== 初始化结束 (即使报错也继续) ==="
-          ls -la src-tauri/gen/android/ || echo "目录可能为空"
 
-      - name: 10. 【关键】手动补全 Gradle 配置文件 (修复 52 字节问题)
+      - name: 10. 补全 Gradle 配置
         run: |
           DIR="src-tauri/gen/android"
           mkdir -p $DIR
           
-          # 1. 强制覆盖 settings.gradle (标准内容，包含 include ':app')
           cat > $DIR/settings.gradle << 'EOF'
           pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
           }
           dependencyResolutionManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
+              repositories { google(); mavenCentral() }
           }
           rootProject.name = "iptv-checker-player"
           include ':app'
           apply from: 'tauri.settings.gradle'
           EOF
-          echo "✅ settings.gradle 已重写 (包含 include ':app')"
 
-          # 2. 创建 tauri.settings.gradle (指向 Tauri 库)
-          # 注意：路径可能是 node_modules/@tauri-apps/cli/android 或者类似路径
           cat > $DIR/tauri.settings.gradle << 'EOF'
           include ':tauri-api'
           project(':tauri-api').projectDir = new File('../../node_modules/@tauri-apps/cli/android')
           EOF
-          echo "✅ tauri.settings.gradle 已创建"
+          echo "✅ Gradle 配置已补全"
 
-          # 3. 检查 app 目录是否存在，不存在就创建基础结构
-          if [ ! -d "$DIR/app" ]; then
-              echo "⚠️ app 目录缺失，尝试从常见位置复制或创建..."
-              # 这里通常 init 会生成 app 目录，如果没生成，编译必败
-              # 但我们先假设 init 生成了 app 目录（截图里有 app 文件夹）
-          fi
-
-      - name: 11. 修复 gradlew 权限
+      - name: 11. 修复权限与 HTTP
         run: |
           sudo apt-get install -y dos2unix
-          if [ -f "src-tauri/gen/android/gradlew" ]; then
-              dos2unix src-tauri/gen/android/gradlew
-              chmod +x src-tauri/gen/android/gradlew
-              echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
-              echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
-              echo "✅ 环境配置完成"
-          else
-              echo "❌ gradlew 缺失"
-              exit 1
-          fi
-
-      - name: 12. 允许 HTTP
-        run: |
+          dos2unix src-tauri/gen/android/gradlew
+          chmod +x src-tauri/gen/android/gradlew
+          echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
+          echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
+          
           MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
               sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST"
-              echo "✅ HTTP 配置完成"
           fi
 
-      - name: 13. 编译 APK
+      - name: 12. 【关键】编译 APK (不再掩盖错误)
         run: |
-          echo "=== 开始编译 ==="
+          echo "=== 开始编译 (这次如果失败会直接报错) ==="
           cd src-tauri/gen/android
           dos2unix gradlew
           chmod +x gradlew
-          # 使用 --stacktrace 看到详细错误
-          ./gradlew assembleDebug --no-daemon --stacktrace || echo "编译失败，请查看日志"
-          echo "=== 编译结束 ==="
+          # 去掉 || echo，让错误直接暴露
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 13. 【关键】寻找并上传 APK
+        run: |
+          echo "=== 查找 APK 文件 ==="
+          # 在整个 gen/android 目录下查找所有 .apk 文件
+          find src-tauri/gen/android -name "*.apk"
+          
+          # 尝试复制找到的 APK 到标准路径，方便上传
+          APK_PATH=$(find src-tauri/gen/android -name "*.apk" | head -n 1)
+          if [ -n "$APK_PATH" ]; then
+              echo "✅ 找到 APK: $APK_PATH"
+              mkdir -p upload_dir
+              cp "$APK_PATH" upload_dir/app-debug.apk
+          else
+              echo "❌ 未找到任何 APK 文件！"
+              echo "=== 检查 build 目录内容 ==="
+              ls -R src-tauri/gen/android/app/build/ || echo "build 目录为空"
+              exit 1
+          fi
 
       - name: 14. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v30
-          path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
+          name: iptv-player-apk-v31
+          path: upload_dir/app-debug.apk
