@@ -1,4 +1,4 @@
-name: Build Android APK (V32 OOM Fix)
+name: Build Android APK (V33 Swap Fix)
 
 on:
   workflow_dispatch:
@@ -11,13 +11,15 @@ jobs:
       - name: 1. 获取代码
         uses: actions/checkout@v4
 
-      - name: 1.5 【关键】增加 Swap 虚拟内存 (防止 Rust 编译 OOM)
+      - name: 1.5 【关键】增加 Swap 虚拟内存 (使用 dd 命令)
         run: |
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "✅ 已增加 4GB Swap 内存"
+          echo "=== 创建 4GB Swap 文件 ==="
+          # 使用 dd 在 /tmp 目录下创建 swap 文件（更兼容）
+          sudo dd if=/dev/zero of=/tmp/swapfile bs=1M count=4096
+          sudo chmod 600 /tmp/swapfile
+          sudo mkswap /tmp/swapfile
+          sudo swapon /tmp/swapfile
+          echo "✅ Swap 已启用"
           free -h
 
       - name: 2. 安装 Node.js 20
@@ -76,12 +78,11 @@ jobs:
           }
           EOF
 
-      - name: 10. 补全 Gradle 配置 (使用绝对路径引用)
+      - name: 10. 补全 Gradle 配置
         run: |
           DIR="src-tauri/gen/android"
           mkdir -p $DIR
           
-          # 1. 重写 settings.gradle
           cat > $DIR/settings.gradle << 'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -94,21 +95,18 @@ jobs:
           apply from: 'tauri.settings.gradle'
           EOF
 
-          # 2. 重写 tauri.settings.gradle (使用 settingsDir 确保路径正确)
           cat > $DIR/tauri.settings.gradle << 'EOF'
           include ':tauri-api'
-          // 使用 settingsDir 获取当前目录，向上两级找到 node_modules
           def tauriApiDir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/android')
           if (tauriApiDir.exists()) {
               project(':tauri-api').projectDir = tauriApiDir
               println "✅ Found tauri-api at: ${tauriApiDir}"
           } else {
-              println "❌ WARNING: tauri-api directory not found at ${tauriApiDir}"
-              // 尝试备用路径
+              println "❌ WARNING: tauri-api not found at ${tauriApiDir}"
               project(':tauri-api').projectDir = new File(settingsDir, '../../node_modules/@tauri-apps/cli/tauri-api/android')
           }
           EOF
-          echo "✅ Gradle 配置已补全 (含路径检查)"
+          echo "✅ Gradle 配置已补全"
 
       - name: 11. 修复权限与 HTTP
         run: |
@@ -118,7 +116,7 @@ jobs:
           echo "sdk.dir=/usr/local/lib/android/sdk" > src-tauri/gen/android/local.properties
           echo "ndk.dir=/usr/local/lib/android/sdk/ndk/26.1.10909125" >> src-tauri/gen/android/local.properties
           
-          # 限制 Gradle 内存，防止 OOM
+          # 限制 Gradle 内存
           echo "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m" >> src-tauri/gen/android/gradle.properties
           
           MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
@@ -126,20 +124,19 @@ jobs:
               sed -i '/<application/a\        android:usesCleartextTraffic="true"' "$MANIFEST"
           fi
 
-      - name: 12. 编译 APK (带内存限制)
+      - name: 12. 编译 APK
         run: |
-          echo "=== 开始编译 (已限制内存，防止崩溃) ==="
+          echo "=== 开始编译 ==="
           cd src-tauri/gen/android
           dos2unix gradlew
           chmod +x gradlew
-          # 运行编译
-          ./gradlew assembleDebug --no-daemon --stacktrace || echo "编译可能失败，请检查日志"
+          ./gradlew assembleDebug --no-daemon --stacktrace || echo "编译可能失败"
           
-          echo "=== 检查编译结果 ==="
+          echo "=== 查找 APK ==="
           find . -name "*.apk"
 
       - name: 13. 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-apk-v32
+          name: iptv-apk-v33
           path: src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
